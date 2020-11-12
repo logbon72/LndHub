@@ -2,9 +2,8 @@ var crypto = require('crypto');
 var lightningPayReq = require('bolt11');
 
 export class Invo {
-  constructor(redis, bitcoindrpc, lightning) {
+  constructor(redis, lightning) {
     this._redis = redis;
-    this._bitcoindrpc = bitcoindrpc;
     this._lightning = lightning;
     this._decoded = false;
     this._bolt11 = false;

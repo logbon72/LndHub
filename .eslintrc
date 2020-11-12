@@ -1,21 +1,25 @@
 {
   "parser": "babel-eslint",
   "plugins": [
-      "prettier"
+    "prettier"
   ],
-  "extends": ["prettier"],
+  "extends": [
+    "prettier"
+  ],
   "rules": {
-    'prettier/prettier': [
-      'warn',
+    "prettier/prettier": [
+      "warn",
       {
-        singleQuote: true,
-        printWidth: 140,
-        trailingComma: 'all'
+        "singleQuote": true,
+        "printWidth": 140,
+        "trailingComma": "all"
       }
     ]
   },
-  "env":{
+  "env": {
     "es6": true
   },
-  "globals": { "fetch": false }
+  "globals": {
+    "fetch": false
+  }
 }

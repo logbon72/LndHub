@@ -3,14 +3,13 @@
  * sentout payments from LND. If locked payment is in there we moe locked payment to array of real payments for the user
  * (it is effectively spent coins by user), if not - we attempt to pay it again (if it is not too old).
  */
-import { User, Lock, Paym } from '../class/';
+import { Paym, User } from '../class/';
+
 const config = require('../config');
 
 const fs = require('fs');
 var Redis = require('ioredis');
 var redis = new Redis(config.redis);
-
-let bitcoinclient = require('../bitcoin');
 let lightning = require('../lightning');
 
 (async () => {
@@ -18,7 +17,7 @@ let lightning = require('../lightning');
   keys = User._shuffle(keys);
 
   console.log('fetching listPayments...');
-  let tempPaym = new Paym(redis, bitcoinclient, lightning);
+  let tempPaym = new Paym(lightning);
   let listPayments = await tempPaym.listPayments();
   console.log('done', 'got', listPayments['payments'].length, 'payments');
   fs.writeFileSync('listPayments.json', JSON.stringify(listPayments['payments'], null, 2));
@@ -27,7 +26,7 @@ let lightning = require('../lightning');
     const userid = key.replace('locked_payments_for_', '');
     console.log('===================================================================================');
     console.log('userid=', userid);
-    let user = new User(redis, bitcoinclient, lightning);
+    let user = new User(redis, lightning);
     user._userid = userid;
     let lockedPayments = await user.getLockedPayments();
     // lockedPayments = [{pay_req : 'lnbc2m1pwgd4tdpp5vjz80mm8murdkskrnre6w4kphzy3d6gap5jyffr93u02ruaj0wtsdq2xgcrqvpsxqcqzysk34zva4h9ce9jdf08nfdm2sh2ek4y4hjse8ww9jputneltjl24krkv50sene4jh0wpull6ujgrg632u2qt3lkva74vpkqr5e5tuuljspasqfhx'}];
@@ -36,7 +35,7 @@ let lightning = require('../lightning');
       let daysPassed = (+new Date() / 1000 - lockedPayment.timestamp) / 3600 / 24;
       console.log('processing lockedPayment=', lockedPayment, daysPassed, 'days passed');
 
-      let payment = new Paym(redis, bitcoinclient, lightning);
+      let payment = new Paym(lightning);
       payment.setInvoice(lockedPayment.pay_req);
       if (daysPassed > (1 / 24) && daysPassed <= 1) {
         // if (!await payment.isExpired()) {

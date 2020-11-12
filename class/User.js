@@ -1,8 +1,9 @@
 import { Lock } from './Lock';
-
-var crypto = require('crypto');
-var lightningPayReq = require('bolt11');
+import { decodeRawHex } from '../btc-decoder';
 import { BigNumber } from 'bignumber.js';
+
+const crypto = require('crypto');
+const lightningPayReq = require('bolt11');
 
 // static cache:
 let _invoice_ispaid_cache = {};
@@ -12,11 +13,11 @@ let _listtransactions_cache_expiry_ts = 0;
 export class User {
   /**
    *
-   * @param {Redis} redis
+   * @param redis
+   * @param lightning
    */
-  constructor(redis, bitcoindrpc, lightning) {
+  constructor(redis, lightning) {
     this._redis = redis;
-    this._bitcoindrpc = bitcoindrpc;
     this._lightning = lightning;
     this._userid = false;
     this._login = false;
@@ -31,12 +32,15 @@ export class User {
   getLogin() {
     return this._login;
   }
+
   getPassword() {
     return this._password;
   }
+
   getAccessToken() {
     return this._acess_token;
   }
+
   getRefreshToken() {
     return this._refresh_token;
   }
@@ -114,19 +118,13 @@ export class User {
     }
 
     let self = this;
-    return new Promise(function(resolve, reject) {
-      self._lightning.newAddress({ type: 0 }, async function(err, response) {
+    return new Promise(function (resolve, reject) {
+      self._lightning.newAddress({ type: 0 }, async function (err, response) {
         if (err) return reject('LND failure');
         await self.addAddress(response.address);
-        self._bitcoindrpc.request('importaddress', [response.address, response.address, false]);
         resolve();
       });
     });
-  }
-
-  async watchAddress(address) {
-    if (!address) return;
-    return this._bitcoindrpc.request('importaddress', [address, address, false]);
   }
 
   /**
@@ -232,8 +230,8 @@ export class User {
 
   async lookupInvoice(payment_hash) {
     let that = this;
-    return new Promise(function(resolve, reject) {
-      that._lightning.lookupInvoice({ r_hash_str: payment_hash }, function(err, response) {
+    return new Promise(function (resolve, reject) {
+      that._lightning.lookupInvoice({ r_hash_str: payment_hash }, function (err, response) {
         if (err) resolve({});
         resolve(response);
       });
@@ -315,12 +313,7 @@ export class User {
    * @returns {Promise<Array>}
    */
   async getTxs() {
-    let addr = await this.getAddress();
-    if (!addr) {
-      await this.generateAddress();
-      addr = await this.getAddress();
-    }
-    if (!addr) throw new Error('cannot get transactions: no onchain address assigned to user');
+    const addr = await this.getOrGenerateAddress();
     let txs = await this._listtransactions();
     txs = txs.result;
     let result = [];
@@ -391,18 +384,10 @@ export class User {
     }
 
     try {
-      let txs = await this._bitcoindrpc.request('listtransactions', ['*', 100500, 0, true]);
       // now, compacting response a bit
       let ret = { result: [] };
-      for (const tx of txs.result) {
-        ret.result.push({
-          category: tx.category,
-          amount: tx.amount,
-          confirmations: tx.confirmations,
-          address: tx.address,
-          time: tx.time,
-        });
-      }
+      let txs = await this._getChainTransactions();
+      ret.result.push(...txs);
       _listtransactions_cache = JSON.stringify(ret);
       _listtransactions_cache_expiry_ts = +new Date() + 5 * 60 * 1000; // 5 min
       this._redis.set('listtransactions', _listtransactions_cache);
@@ -415,18 +400,42 @@ export class User {
     }
   }
 
+  async _getChainTransactions() {
+    return new Promise((resolve, reject) => {
+      this._lightning.getTransactions({}, (err, data) => {
+        if (err) return reject(err);
+        const { transactions } = data;
+        const outTxns = [];
+        // on lightning incoming transactions have no labels
+        // for now filter out known labels to reduce transactions
+        transactions
+          .filter((tx) => tx.label !== 'external' && !tx.label.includes('openchannel'))
+          .map((tx) => {
+            const decodedTx = decodeRawHex(tx.raw_tx_hex);
+            decodedTx.outputs.forEach((vout) =>
+              outTxns.push({
+                // mark all as received, since external is filtered out
+                category: 'receive',
+                confirmations: tx.num_confirmations,
+                amount: Number(vout.value),
+                address: vout.scriptPubKey.addresses[0],
+                time: tx.time_stamp,
+              }),
+            );
+          });
+
+        resolve(outTxns);
+      });
+    });
+  }
+
   /**
    * Returning onchain txs for user's address that are less than 3 confs
    *
    * @returns {Promise<Array>}
    */
   async getPendingTxs() {
-    let addr = await this.getAddress();
-    if (!addr) {
-      await this.generateAddress();
-      addr = await this.getAddress();
-    }
-    if (!addr) throw new Error('cannot get transactions: no onchain address assigned to user');
+    const addr = await this.getOrGenerateAddress();
     let txs = await this._listtransactions();
     txs = txs.result;
     let result = [];
@@ -454,42 +463,6 @@ export class User {
   async _saveUserToDatabase() {
     let key;
     await this._redis.set((key = 'user_' + this._login + '_' + this._hash(this._password)), this._userid);
-  }
-
-  /**
-   * Fetches all onchain txs for user's address, and compares them to
-   * already imported txids (stored in database); Ones that are not imported -
-   * get their balance added to user's balance, and its txid added to 'imported' list.
-   *
-   * @returns {Promise<void>}
-   */
-  async accountForPosibleTxids() {
-    return; // TODO: remove
-    let onchain_txs = await this.getTxs();
-    let imported_txids = await this._redis.lrange('imported_txids_for_' + this._userid, 0, -1);
-    for (let tx of onchain_txs) {
-      if (tx.type !== 'bitcoind_tx') continue;
-      let already_imported = false;
-      for (let imported_txid of imported_txids) {
-        if (tx.txid === imported_txid) already_imported = true;
-      }
-
-      if (!already_imported && tx.category === 'receive') {
-        // first, locking...
-        let lock = new Lock(this._redis, 'importing_' + tx.txid);
-        if (!(await lock.obtainLock())) {
-          // someone's already importing this tx
-          return;
-        }
-
-        let userBalance = await this.getCalculatedBalance();
-        // userBalance += new BigNumber(tx.amount).multipliedBy(100000000).toNumber();
-        // no need to add since it was accounted for in `this.getCalculatedBalance()`
-        await this.saveBalance(userBalance);
-        await this._redis.rpush('imported_txids_for_' + this._userid, tx.txid);
-        await lock.releaseLock();
-      }
-    }
   }
 
   /**
@@ -539,18 +512,25 @@ export class User {
       try {
         json = JSON.parse(paym);
         result.push(json);
-      } catch (_) {}
+      } catch (_) {
+      }
     }
 
     return result;
   }
 
+  async getOrGenerateAddress() {
+    let addr = await this.getAddress();
+    if (!addr) {
+      await this.generateAddress();
+      addr = await this.getAddress();
+    }
+    if (!addr) throw new Error('cannot get transactions: no onchain address assigned to user');
+    return addr;
+  }
+
   _hash(string) {
-    return crypto
-      .createHash('sha256')
-      .update(string)
-      .digest()
-      .toString('hex');
+    return crypto.createHash('sha256').update(string).digest().toString('hex');
   }
 
   /**
