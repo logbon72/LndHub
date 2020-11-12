@@ -288,7 +288,7 @@ router.post('/payinvoice', authenticator, async function (req, res) {
           // payment failed
           lock.releaseLock();
           console.log('Payment Failure:', payment ? JSON.stringify(payment) : '-');
-          return errorPaymentFailed(res);
+          return errorPaymentFailed(res, payment && payment.payment_error);
         }
       });
       if (!info.num_satoshis) {
@@ -307,7 +307,7 @@ router.post('/payinvoice', authenticator, async function (req, res) {
       } catch (err) {
         await lock.releaseLock();
         console.error('Payment could not be completed:', err);
-        return errorPaymentFailed(res);
+        return errorPaymentFailed(res, err.message);
       }
     } else {
       await lock.releaseLock();
@@ -490,10 +490,10 @@ function errorTryAgainLater(res) {
   });
 }
 
-function errorPaymentFailed(res) {
+function errorPaymentFailed(res, message = null) {
   return res.status(400).send({
     error: true,
     code: 10,
-    message: 'Payment failed. Does the receiver have enough inbound capacity?',
+    message: message || 'Payment failed. Does the receiver have enough inbound capacity?',
   });
 }
