@@ -66,7 +66,7 @@ const subscribeInvoicesCallCallback = async function (response) {
     user._userid = await user.getUseridByPaymentHash(LightningInvoiceSettledNotification.hash);
     await user.clearBalanceCache();
     console.log('payment', LightningInvoiceSettledNotification.hash, 'was paid, posting to GroundControl...');
-    const baseURI = process.env.GROUNDCONTROL;
+    const baseURI = config.groundControlUrl;
     if (!baseURI) return;
     const _api = new Frisbee({ baseURI: baseURI });
     const apiResponse = await _api.post(
@@ -85,6 +85,7 @@ const subscribeInvoicesCallCallback = async function (response) {
     console.log('GroundControl:', apiResponse.originalResponse.status);
   }
 };
+
 let subscribeInvoicesCall = lightning.subscribeInvoices({});
 subscribeInvoicesCall.on('data', subscribeInvoicesCallCallback);
 subscribeInvoicesCall.on('status', function (status) {
@@ -98,9 +99,18 @@ subscribeInvoicesCall.on('end', function () {
 
 const rateLimit = require('express-rate-limit');
 const postLimiter = rateLimit({
-  windowMs: 30 * 60 * 1000,
+  windowMs: 60 * 1000,
   max: 100,
 });
+
+const authenticator = async (req, res, next) => {
+  let u = new User(redis, lightning);
+  if (!(await u.loadByAuthorization(req.headers.authorization))) {
+    return errorBadAuth(res);
+  }
+  req.user = u;
+  next();
+};
 
 router.post('/create', postLimiter, async function (req, res) {
   logger.log('/create', [req.id]);
@@ -137,42 +147,37 @@ router.post('/auth', postLimiter, async function (req, res) {
   }
 });
 
-router.post('/addinvoice', postLimiter, async function (req, res) {
+router.post('/addinvoice', postLimiter, authenticator, async function (req, res) {
   logger.log('/addinvoice', [req.id]);
-  let u = new User(redis, lightning);
-  if (!(await u.loadByAuthorization(req.headers.authorization))) {
-    return errorBadAuth(res);
-  }
+  let u = req.user;
   logger.log('/addinvoice', [req.id, 'userid: ' + u.getUserId()]);
 
   if (!req.body.amt || /*stupid NaN*/ !(req.body.amt > 0)) return errorBadArguments(res);
 
   const invoice = new Invo(redis, lightning);
   const r_preimage = invoice.makePreimageHex();
-  lightning.addInvoice({
-    memo: req.body.memo,
-    value: req.body.amt,
-    expiry: 3600 * 24,
-    r_preimage: Buffer.from(r_preimage, 'hex').toString('base64'),
-  }, async function (err, info) {
-    if (err) return errorLnd(res);
+  lightning.addInvoice(
+    {
+      memo: req.body.memo,
+      value: req.body.amt,
+      expiry: 3600 * 24,
+      r_preimage: Buffer.from(r_preimage, 'hex').toString('base64'),
+    },
+    async function (err, info) {
+      if (err) return errorLnd(res);
 
-    info.pay_req = info.payment_request; // client backwards compatibility
-    await u.saveUserInvoice(info);
-    await invoice.savePreimage(r_preimage);
+      info.pay_req = info.payment_request; // client backwards compatibility
+      await u.saveUserInvoice(info);
+      await invoice.savePreimage(r_preimage);
 
-    res.send(info);
-  });
+      res.send(info);
+    },
+  );
 });
 
-router.post('/payinvoice', async function (req, res) {
-  let u = new User(redis, lightning);
-  if (!(await u.loadByAuthorization(req.headers.authorization))) {
-    return errorBadAuth(res);
-  }
-
+router.post('/payinvoice', authenticator, async function (req, res) {
+  let u = req.user;
   logger.log('/payinvoice', [req.id, 'userid: ' + u.getUserId(), 'invoice: ' + req.body.invoice]);
-
   if (!req.body.invoice) return errorBadArguments(res);
   let freeAmount = false;
   if (req.body.amount) {
@@ -305,28 +310,15 @@ router.post('/payinvoice', async function (req, res) {
   });
 });
 
-router.get('/getbtc', async function (req, res) {
+router.get('/getbtc', authenticator, async function (req, res) {
   logger.log('/getbtc', [req.id]);
-  let u = new User(redis, lightning);
-  await u.loadByAuthorization(req.headers.authorization);
-
-  if (!u.getUserId()) {
-    return errorBadAuth(res);
-  }
-
-  let address = await u.getOrGenerateAddress();
+  let address = await req.user.getOrGenerateAddress();
   res.send([{ address }]);
 });
 
-router.get('/checkpayment/:payment_hash', async function (req, res) {
+router.get('/checkpayment/:payment_hash', authenticator, async function (req, res) {
   logger.log('/checkpayment', [req.id]);
-  let u = new User(redis, lightning);
-  await u.loadByAuthorization(req.headers.authorization);
-
-  if (!u.getUserId()) {
-    return errorBadAuth(res);
-  }
-
+  const u = req.user;
   let paid = true;
   if (!(await u.getPaymentHashPaid(req.params.payment_hash))) { // Not found on cache
     paid = await u.syncInvoicePaid(req.params.payment_hash);
@@ -334,15 +326,10 @@ router.get('/checkpayment/:payment_hash', async function (req, res) {
   res.send({ paid: paid });
 });
 
-router.get('/balance', postLimiter, async function (req, res) {
-  let u = new User(redis, lightning);
+router.get('/balance', postLimiter, authenticator, async function (req, res) {
+  let u = req.user;
   try {
-    logger.log('/balance', [req.id]);
-    if (!(await u.loadByAuthorization(req.headers.authorization))) {
-      return errorBadAuth(res);
-    }
     logger.log('/balance', [req.id, 'userid: ' + u.getUserId()]);
-
     await u.getOrGenerateAddress();
     let balance = await u.getBalance();
     if (balance < 0) balance = 0;
@@ -353,25 +340,17 @@ router.get('/balance', postLimiter, async function (req, res) {
   }
 });
 
-router.get('/getinfo', postLimiter, async function (req, res) {
+router.get('/getinfo', postLimiter, authenticator, async function (req, res) {
   logger.log('/getinfo', [req.id]);
-  let u = new User(redis, lightning);
-  if (!(await u.loadByAuthorization(req.headers.authorization))) {
-    return errorBadAuth(res);
-  }
-
   lightning.getInfo({}, function (err, info) {
     if (err) return errorLnd(res);
     res.send(info);
   });
 });
 
-router.get('/gettxs', async function (req, res) {
+router.get('/gettxs', authenticator, async function (req, res) {
   logger.log('/gettxs', [req.id]);
-  let u = new User(redis, lightning);
-  if (!(await u.loadByAuthorization(req.headers.authorization))) {
-    return errorBadAuth(res);
-  }
+  let u = req.user;
   logger.log('/gettxs', [req.id, 'userid: ' + u.getUserId()]);
 
   await u.getOrGenerateAddress();
@@ -394,12 +373,9 @@ router.get('/gettxs', async function (req, res) {
   }
 });
 
-router.get('/getuserinvoices', postLimiter, async function (req, res) {
+router.get('/getuserinvoices', postLimiter, authenticator, async function (req, res) {
   logger.log('/getuserinvoices', [req.id]);
-  let u = new User(redis, lightning);
-  if (!(await u.loadByAuthorization(req.headers.authorization))) {
-    return errorBadAuth(res);
-  }
+  let u = req.user;
   logger.log('/getuserinvoices', [req.id, 'userid: ' + u.getUserId()]);
 
   try {
@@ -411,12 +387,9 @@ router.get('/getuserinvoices', postLimiter, async function (req, res) {
   }
 });
 
-router.get('/getpending', async function (req, res) {
+router.get('/getpending', authenticator, async function (req, res) {
   logger.log('/getpending', [req.id]);
-  let u = new User(redis, lightning);
-  if (!(await u.loadByAuthorization(req.headers.authorization))) {
-    return errorBadAuth(res);
-  }
+  const u = req.user;
   logger.log('/getpending', [req.id, 'userid: ' + u.getUserId()]);
 
   await u.getOrGenerateAddress();
@@ -424,12 +397,9 @@ router.get('/getpending', async function (req, res) {
   res.send(txs);
 });
 
-router.get('/decodeinvoice', async function (req, res) {
+router.get('/decodeinvoice', authenticator, async function (req, res) {
   logger.log('/decodeinvoice', [req.id]);
-  let u = new User(redis, lightning);
-  if (!(await u.loadByAuthorization(req.headers.authorization))) {
-    return errorBadAuth(res);
-  }
+  let u = req.user;
 
   if (!req.query.invoice) return errorGeneralServerError(res);
 
@@ -439,12 +409,9 @@ router.get('/decodeinvoice', async function (req, res) {
   });
 });
 
-router.get('/checkrouteinvoice', async function (req, res) {
+router.get('/checkrouteinvoice', authenticator, async function (req, res) {
   logger.log('/checkrouteinvoice', [req.id]);
-  let u = new User(redis, lightning);
-  if (!(await u.loadByAuthorization(req.headers.authorization))) {
-    return errorBadAuth(res);
-  }
+  let u = req.user;
 
   if (!req.query.invoice) return errorGeneralServerError(res);
 

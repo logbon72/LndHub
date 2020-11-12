@@ -4,6 +4,7 @@ let config = {
     url: process.env.LND_URL || '127.0.0.1:10009',
     password: process.env.LND_URL || '',
   },
+  groundControlUrl: process.env.GROUNDCONTROL,
 };
 
 if (process.env.CONFIG) {
