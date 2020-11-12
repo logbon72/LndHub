@@ -9,12 +9,11 @@ const fs = require('fs');
 const Redis = require('ioredis');
 const redis = new Redis(config.redis);
 
-let bitcoinclient = require('../bitcoin');
 let lightning = require('../lightning');
 
 (async () => {
   console.log('fetching listinvoices...');
-  let tempInv = new Invo(redis, bitcoinclient, lightning);
+  let tempInv = new Invo(redis, lightning);
 
   let listinvoices = await tempInv.listInvoices();
   console.log('done', 'got', listinvoices['invoices'].length, 'invoices');

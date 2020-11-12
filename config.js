@@ -1,17 +1,8 @@
 let config = {
-  bitcoind: {
-    rpc: 'http://login:password@1.1.1.1:8332/wallet/wallet.dat',
-  },
-  redis: {
-    port: 12914,
-    host: '1.1.1.1',
-    family: 4,
-    password: 'password',
-    db: 0,
-  },
+  redisUri: process.env.REDIS_URI || 'redis://127.0.0.1:6379',
   lnd: {
-    url: '1.1.1.1:10009',
-    password: '',
+    url: process.env.LND_URL || '127.0.0.1:10009',
+    password: process.env.LND_URL || '',
   },
 };
 

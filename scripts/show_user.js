@@ -12,12 +12,11 @@ redis.info(function(err, info) {
   }
 });
 
-let bitcoinclient = require('../bitcoin');
 let lightning = require('../lightning');
 
 (async () => {
   let userid = process.argv[2];
-  let U = new User(redis, bitcoinclient, lightning);
+  let U = new User(redis, lightning);
   U._userid = userid;
 
   let userinvoices = await U.getUserInvoices();
