@@ -112,6 +112,8 @@ const authenticator = async (req, res, next) => {
   next();
 };
 
+const getFees = (amount) => Math.floor((amount * config.feesPercent) / 100.0);
+
 router.post('/create', postLimiter, async function (req, res) {
   logger.log('/create', [req.id]);
   if (!(req.body.partnerid && req.body.partnerid === 'bluewallet' && req.body.accounttype)) return errorBadArguments(res);
@@ -175,6 +177,7 @@ router.post('/addinvoice', postLimiter, authenticator, async function (req, res)
   );
 });
 
+
 router.post('/payinvoice', authenticator, async function (req, res) {
   let u = req.user;
   logger.log('/payinvoice', [req.id, 'userid: ' + u.getUserId(), 'invoice: ' + req.body.invoice]);
@@ -213,7 +216,8 @@ router.post('/payinvoice', authenticator, async function (req, res) {
 
     logger.log('/payinvoice', [req.id, 'userBalance: ' + userBalance, 'num_satoshis: ' + info.num_satoshis]);
 
-    if (userBalance >= +info.num_satoshis + Math.floor(info.num_satoshis * 0.01)) {
+    const totalDue = +info.num_satoshis + getFees(info.num_satoshis);
+    if (userBalance >= totalDue) {
       // got enough balance, including 1% of payment amount - reserve for fees
 
       if (identity_pubkey === info.destination) {
@@ -358,10 +362,11 @@ router.get('/gettxs', authenticator, async function (req, res) {
     let txs = await u.getTxs();
     let lockedPayments = await u.getLockedPayments();
     for (let locked of lockedPayments) {
+      const fee = getFees(locked.amount);
       txs.push({
         type: 'paid_invoice',
-        fee: Math.floor(locked.amount * 0.01) /* feelimit */,
-        value: locked.amount + Math.floor(locked.amount * 0.01) /* feelimit */,
+        fee,
+        value: locked.amount + fee /* feelimit */,
         timestamp: locked.timestamp,
         memo: 'Payment in transition',
       });
@@ -439,7 +444,7 @@ function errorNotEnougBalance(res) {
   return res.send({
     error: true,
     code: 2,
-    message: 'not enough balance. Make sure you have at least 1% reserved for potential fees',
+    message: `Not enough balance. Make sure you have at least ${config.feesPercent}% reserved for potential fees`,
   });
 }
 
