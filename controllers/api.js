@@ -444,7 +444,7 @@ function errorNotEnougBalance(res) {
   return res.send({
     error: true,
     code: 2,
-    message: 'not enough balance. Make sure you have at least 1% reserved for potential fees',
+    message: `Not enough balance. Make sure you have at least ${config.feesPercent}% reserved for potential fees`,
   });
 }
 
