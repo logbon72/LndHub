@@ -287,6 +287,7 @@ router.post('/payinvoice', authenticator, async function (req, res) {
         } else {
           // payment failed
           lock.releaseLock();
+          console.log('Payment Failure:', payment ? JSON.stringify(payment) : '-');
           return errorPaymentFailed(res);
         }
       });
@@ -303,13 +304,14 @@ router.post('/payinvoice', authenticator, async function (req, res) {
       try {
         await u.lockFunds(req.body.invoice, info);
         call.write(inv);
-      } catch (Err) {
+      } catch (err) {
         await lock.releaseLock();
+        console.error('Payment could not be completed:', err);
         return errorPaymentFailed(res);
       }
     } else {
       await lock.releaseLock();
-      return errorNotEnougBalance(res);
+      return errorNotEnoughBalance(res);
     }
   });
 });
@@ -433,15 +435,15 @@ module.exports = router;
 // ################# HELPERS ###########################
 
 function errorBadAuth(res) {
-  return res.send({
+  return res.status(401).send({
     error: true,
     code: 1,
     message: 'bad auth',
   });
 }
 
-function errorNotEnougBalance(res) {
-  return res.send({
+function errorNotEnoughBalance(res) {
+  return res.status(400).send({
     error: true,
     code: 2,
     message: `Not enough balance. Make sure you have at least ${config.feesPercent}% reserved for potential fees`,
@@ -449,7 +451,7 @@ function errorNotEnougBalance(res) {
 }
 
 function errorNotAValidInvoice(res) {
-  return res.send({
+  return res.status(400).send({
     error: true,
     code: 4,
     message: 'not a valid invoice',
@@ -457,15 +459,15 @@ function errorNotAValidInvoice(res) {
 }
 
 function errorLnd(res) {
-  return res.send({
+  return res.status(500).send({
     error: true,
     code: 7,
-    message: 'LND failue',
+    message: 'LND failure',
   });
 }
 
 function errorGeneralServerError(res) {
-  return res.send({
+  return res.status(500).send({
     error: true,
     code: 6,
     message: 'Something went wrong. Please try again later',
@@ -473,7 +475,7 @@ function errorGeneralServerError(res) {
 }
 
 function errorBadArguments(res) {
-  return res.send({
+  return res.status(400).send({
     error: true,
     code: 8,
     message: 'Bad arguments',
@@ -481,7 +483,7 @@ function errorBadArguments(res) {
 }
 
 function errorTryAgainLater(res) {
-  return res.send({
+  return res.status(503).send({
     error: true,
     code: 9,
     message: 'Your previous payment is in transit. Try again in 5 minutes',
@@ -489,7 +491,7 @@ function errorTryAgainLater(res) {
 }
 
 function errorPaymentFailed(res) {
-  return res.send({
+  return res.status(400).send({
     error: true,
     code: 10,
     message: 'Payment failed. Does the receiver have enough inbound capacity?',
