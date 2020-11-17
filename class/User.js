@@ -259,11 +259,10 @@ export class User {
   }
 
   async getUserInvoices(limit) {
-    let range = await this._redis.lrange('userinvoices_for_' + this._userid, 0, -1);
-    if (limit && !isNaN(parseInt(limit))) {
-      range = range.slice(parseInt(limit) * -1);
-    }
-    let result = [];
+    const start = limit && !isNaN(parseInt(limit)) ? parseInt(limit) * -1 : 0;
+    const end = -1;
+    const range = await this._redis.lrange('userinvoices_for_' + this._userid, start, end);
+    const result = [];
     for (let invoice of range) {
       invoice = JSON.parse(invoice);
       let decoded = lightningPayReq.decode(invoice.payment_request);
@@ -306,26 +305,11 @@ export class User {
     await this._redis.set('bitcoin_address_for_' + this._userid, address);
   }
 
-  /**
-   * User's onchain txs that are >= 3 confs
-   * Queries bitcoind RPC.
-   *
-   * @returns {Promise<Array>}
-   */
-  async getTxs() {
-    const addr = await this.getOrGenerateAddress();
-    let txs = await this._listtransactions();
-    txs = txs.result;
-    let result = [];
-    for (let tx of txs) {
-      if (tx.confirmations >= 3 && tx.address === addr && tx.category === 'receive') {
-        tx.type = 'bitcoind_tx';
-        result.push(tx);
-      }
-    }
-
-    let range = await this._redis.lrange('txs_for_' + this._userid, 0, -1);
-    for (let invoice of range) {
+  async getPaidInvoices(limit = 0) {
+    const start = limit > 0 ? limit * -1 : 0;
+    const end = -1;
+    const range = await this._redis.lrange('txs_for_' + this._userid, start, end);
+    return range.map((invoice) => {
       invoice = JSON.parse(invoice);
       invoice.type = 'paid_invoice';
 
@@ -350,14 +334,36 @@ export class User {
       if (invoice.payment_preimage) {
         invoice.payment_preimage = Buffer.from(invoice.payment_preimage, 'hex').toString('hex');
       }
-      // removing unsued by client fields to reduce size
-      delete invoice.payment_error;
-      delete invoice.payment_route;
-      delete invoice.pay_req;
+      invoice.expiry = invoice.decoded.expiry;
+
       delete invoice.decoded;
-      result.push(invoice);
+      delete invoice.payment_route;
+      delete invoice.payment_error;
+
+      return invoice;
+    });
+  }
+
+  /**
+   * User's onchain txs that are >= 3 confs
+   * Queries bitcoind RPC.
+   *
+   * @returns {Promise<Array>}
+   */
+  async getTxs() {
+    const addr = await this.getOrGenerateAddress();
+    let txs = await this._listtransactions();
+    txs = txs.result;
+    let result = [];
+    for (let tx of txs) {
+      if (tx.confirmations >= 3 && tx.address === addr && tx.category === 'receive') {
+        tx.type = 'bitcoind_tx';
+        result.push(tx);
+      }
     }
 
+    const paidInvoices = await this.getPaidInvoices();
+    result.push(...paidInvoices);
     return result;
   }
 
@@ -508,10 +514,8 @@ export class User {
     let payments = await this._redis.lrange('locked_payments_for_' + this._userid, 0, -1);
     let result = [];
     for (let paym of payments) {
-      let json;
       try {
-        json = JSON.parse(paym);
-        result.push(json);
+        result.push(JSON.parse(paym));
       } catch (_) {
       }
     }

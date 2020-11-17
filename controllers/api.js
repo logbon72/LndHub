@@ -332,6 +332,94 @@ router.get('/checkpayment/:payment_hash', authenticator, async function (req, re
   res.send({ paid: paid });
 });
 
+const normaliseInvoiceResponse = (invoice, type) => {
+  const output = { type };
+  if (type === 'paid_invoice') {
+    output.payment_hash = jsonBufferToHex(invoice.payment_hash);
+    output.amt = parseInt(invoice.value) - invoice.fee;
+    output.fees = invoice.fee;
+    output.direction = 'outgoing';
+    output.pay_req = invoice.pay_req;
+    output.is_paid = true;
+    output.expiry = invoice.expiry;
+    output.timestamp = invoice.timestamp;
+    output.description = invoice.memo;
+  } else if (type === 'user_invoice') {
+    output.payment_hash = invoice.payment_hash;
+    output.amt = invoice.amt;
+    output.fees = 0;
+    output.direction = 'incoming';
+    output.pay_req = invoice.payment_request;
+    output.is_paid = invoice.ispaid;
+    output.expiry = invoice.expire_time;
+    output.timestamp = invoice.timestamp;
+    output.description = invoice.description;
+  } else if (type === 'locked_payment') {
+    output.payment_hash = invoice.payment_hash;
+    output.amt = parseInt(invoice.num_satoshis);
+    output.fees = 0;
+    output.direction = 'outgoing';
+    output.pay_req = invoice.pay_req;
+    output.is_paid = false;
+    output.expiry = parseInt(invoice.expiry);
+    output.timestamp = invoice.timestamp;
+    output.description = invoice.description;
+  }
+
+  return output;
+};
+
+const decodeInvoice = async (pay_req) => {
+  return new Promise((resolve, reject) => {
+    lightning.decodePayReq({ pay_req }, function (err, info) {
+      if (err) reject(err);
+      resolve(info);
+    });
+  });
+};
+
+const jsonBufferToHex = (obj) => Buffer.from(obj.data).toString('hex');
+
+// Find user's invoice from different sources
+// First check last 500 paid invoices
+// Next, check in generated invoice
+// Then check in locked invoices - most resource intensive
+router.get('/finduserinvoice/:payment_hash', authenticator, async function (req, res) {
+  logger.log('/finduserinvoice', [req.id]);
+  const { payment_hash } = req.params;
+  const u = req.user;
+  let invoice;
+
+  //check paid invoices
+  const paidInvoices = await u.getPaidInvoices(500);
+  invoice = paidInvoices.find((d) => jsonBufferToHex(d.payment_hash) === payment_hash);
+  if (invoice) {
+    return res.send(normaliseInvoiceResponse(invoice, invoice.type));
+  }
+
+  const userInvoices = await u.getUserInvoices(500);
+  invoice = userInvoices.find((inv) => inv.payment_hash === payment_hash);
+  if (invoice) {
+    return res.send(normaliseInvoiceResponse(invoice, invoice.type));
+  }
+  // check locked invoices
+  const lockedInvoices = await u.getLockedPayments();
+  for (let inv of lockedInvoices) {
+    try {
+      const decoded = await decodeInvoice(inv.pay_req);
+      if (decoded.payment_hash === payment_hash) {
+        decoded.pay_req = inv.pay_req;
+        return res.send(normaliseInvoiceResponse(decoded, 'locked_payment'));
+      }
+    } catch (err) {
+      console.error('FIND_INVOICE decode error :: ', inv.pay_req);
+    }
+  }
+
+  errorInvoiceNotFound(res);
+});
+
+
 router.get('/balance', postLimiter, authenticator, async function (req, res) {
   let u = req.user;
   try {
@@ -495,5 +583,13 @@ function errorPaymentFailed(res, message = null) {
     error: true,
     code: 10,
     message: message || 'Payment failed. Does the receiver have enough inbound capacity?',
+  });
+}
+
+function errorInvoiceNotFound(res) {
+  return res.status(404).send({
+    error: true,
+    code: 11,
+    message: 'Could not find invoice with specified hash',
   });
 }
