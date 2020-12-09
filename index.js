@@ -1,4 +1,4 @@
-process.on('uncaughtException', function(err) {
+process.on('uncaughtException', function (err) {
   console.error(err);
   console.log('Node NOT Exiting...');
 });
@@ -23,7 +23,7 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-app.use(function(req, res, next) {
+app.use(function (req, res, next) {
   req.id = uuid.v4();
   next();
 });
@@ -41,10 +41,22 @@ app.use(bodyParser.urlencoded({ extended: false })); // parse application/x-www-
 app.use(bodyParser.json(null)); // parse application/json
 
 app.use('/static', express.static('static'));
-app.use(require('./controllers/api'));
-app.use(require('./controllers/website'));
 
-let server = app.listen(process.env.PORT || 3000, function() {
-  logger.log('BOOTING UP', 'Listening on port ' + (process.env.PORT || 3000));
-});
-module.exports = server;
+(async () => {
+  const lndUnlocker = require('./wallet-unlocker');
+  console.log('Attempting to Unlock Wallet');
+  try {
+    // The goal here is to ensure we try to unlock the wallet before connecting to Lightning RPC
+    const unlock = await lndUnlocker.unlock();
+    logger.log('Unlock Result: ' + JSON.stringify(unlock), 'Unlock');
+  } catch (err) {
+    console.log('unlockWallet failed, probably because its been already unlocked', err.message);
+  }
+
+  app.use(require('./controllers/api'));
+  app.use(require('./controllers/website'));
+
+  app.listen(process.env.PORT || 3000, function () {
+    logger.log('BOOTING UP', 'Listening on port ' + (process.env.PORT || 3000));
+  });
+})();
