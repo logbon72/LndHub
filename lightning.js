@@ -19,29 +19,43 @@ if (process.env.MACAROON) {
   macaroon = fs.readFileSync('admin.macaroon').toString('hex');
 }
 process.env.VERBOSE && console.log('using macaroon', macaroon);
-let macaroonCreds = grpc.credentials.createFromMetadataGenerator(function(args, callback) {
+const macaroonCreds = grpc.credentials.createFromMetadataGenerator(function (args, callback) {
   let metadata = new grpc.Metadata();
   metadata.add('macaroon', macaroon);
   callback(null, metadata);
 });
+
 let creds = grpc.credentials.combineChannelCredentials(sslCreds, macaroonCreds);
 
-// trying to unlock the wallet:
-if (config.lnd.password) {
+const unlockWallet = async () => {
   process.env.VERBOSE && console.log('trying to unlock the wallet');
-  var walletUnlocker = new lnrpc.WalletUnlocker(config.lnd.url, creds);
-  walletUnlocker.unlockWallet(
-    {
-      wallet_password: Buffer.from(config.lnd.password).toString('base64'),
-    },
-    function(err, response) {
-      if (err) {
-        process.env.VERBOSE && console.log('unlockWallet failed, probably because its been aleady unlocked');
-      } else {
-        console.log('unlockWallet:', response);
-      }
-    },
-  );
-}
+  return new Promise((resolve, reject) => {
+    const walletUnlocker = new lnrpc.WalletUnlocker(config.lnd.url, creds);
+    walletUnlocker.unlockWallet(
+      {
+        wallet_password: Buffer.from(config.lnd.password).toString('base64'),
+      },
+      function (err, response) {
+        if (err) {
+          reject(err);
+        } else {
+          console.log('unlockWallet:', response);
+          resolve(response);
+        }
+      },
+    );
+  });
+};
+
+(async () => {
+  // trying to unlock the wallet:
+  if (config.lnd.password) {
+    try {
+      await unlockWallet();
+    } catch (err) {
+      console.log('unlockWallet failed, probably because its been already unlocked', err.message);
+    }
+  }
+})();
 
 module.exports = new lnrpc.Lightning(config.lnd.url, creds, { 'grpc.max_receive_message_length': 1024 * 1024 * 1024 });
